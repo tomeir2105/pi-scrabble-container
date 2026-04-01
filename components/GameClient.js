@@ -72,6 +72,7 @@ export default function GameClient({ view = "entry" }) {
   const socketRef = useRef(null);
   const autoJoinAttemptedRef = useRef(false);
   const draggedTileIdRef = useRef(null);
+  const floatingDragRef = useRef(null);
 
   const [playerId, setPlayerId] = useState("");
   const [playerName, setPlayerName] = useState("");
@@ -86,6 +87,8 @@ export default function GameClient({ view = "entry" }) {
   const [exchangeTileIds, setExchangeTileIds] = useState([]);
   const [rulesDraft, setRulesDraft] = useState(null);
   const [traySlots, setTraySlots] = useState(() => Array.from({ length: TRAY_SIZE }, () => null));
+  const [isRackFloating, setIsRackFloating] = useState(false);
+  const [floatingRackPos, setFloatingRackPos] = useState({ x: 24, y: 24 });
 
   const selfPlayer = roomState?.players.find((player) => player.id === playerId) || null;
   const isMyTurn = roomState?.currentTurnPlayerId === playerId;
@@ -160,6 +163,30 @@ export default function GameClient({ view = "entry" }) {
       letterValues: { ...roomState.rules.letterValues }
     });
   }, [roomState?.rules]);
+
+  useEffect(() => {
+    function handlePointerMove(event) {
+      if (!floatingDragRef.current) {
+        return;
+      }
+
+      const { offsetX, offsetY } = floatingDragRef.current;
+      const nextX = Math.max(8, Math.min(window.innerWidth - 280, event.clientX - offsetX));
+      const nextY = Math.max(8, Math.min(window.innerHeight - 120, event.clientY - offsetY));
+      setFloatingRackPos({ x: nextX, y: nextY });
+    }
+
+    function stopDragging() {
+      floatingDragRef.current = null;
+    }
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", stopDragging);
+    return () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", stopDragging);
+    };
+  }, []);
 
   useEffect(() => {
     if (!connected || !playerId || !playerName.trim() || !initialRoomCode || autoJoinAttemptedRef.current || roomState) {
@@ -449,6 +476,67 @@ export default function GameClient({ view = "entry" }) {
   function recallTiles() {
     setPendingPlacements([]);
     setSelectedTileId(null);
+  }
+
+  function placeTileInTray(tileId, slotIndex) {
+    if (!selfPlayer || !tileId || slotIndex < 0 || slotIndex >= TRAY_SIZE) {
+      return;
+    }
+
+    const tileExists = selfPlayer.rack.some((tile) => tile.id === tileId);
+    if (!tileExists || pendingByTileId.has(tileId)) {
+      return;
+    }
+
+    setTraySlots((current) => {
+      const next = [...current];
+      const currentIndex = next.indexOf(tileId);
+
+      if (currentIndex === slotIndex) {
+        return current;
+      }
+
+      if (currentIndex >= 0) {
+        [next[currentIndex], next[slotIndex]] = [next[slotIndex], next[currentIndex]];
+        return next;
+      }
+
+      next[slotIndex] = tileId;
+      return next;
+    });
+  }
+
+  function clearTray() {
+    setTraySlots(Array.from({ length: TRAY_SIZE }, () => null));
+  }
+
+  function handleTrayDragOver(event) {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+  }
+
+  function handleTrayDrop(event, slotIndex) {
+    event.preventDefault();
+    const droppedTileId = event.dataTransfer.getData("text/plain") || draggedTileIdRef.current;
+    placeTileInTray(droppedTileId, slotIndex);
+    draggedTileIdRef.current = null;
+  }
+
+  function toggleRackFloating() {
+    setIsRackFloating((current) => !current);
+    floatingDragRef.current = null;
+  }
+
+  function handleFloatingRackPointerDown(event) {
+    if (!isRackFloating) {
+      return;
+    }
+
+    const rect = event.currentTarget.parentElement.getBoundingClientRect();
+    floatingDragRef.current = {
+      offsetX: event.clientX - rect.left,
+      offsetY: event.clientY - rect.top
+    };
   }
 
   function updateRuleField(section, letter, rawValue) {
@@ -860,8 +948,23 @@ export default function GameClient({ view = "entry" }) {
               />
             </div>
 
-            <div className="panel">
-              <div className="panel-title">מדף אותיות</div>
+            <div
+              className={["panel", "rack-panel", isRackFloating ? "floating" : ""].filter(Boolean).join(" ")}
+              style={isRackFloating ? { left: `${floatingRackPos.x}px`, top: `${floatingRackPos.y}px` } : undefined}
+            >
+              <div className="rack-drag-handle" onPointerDown={handleFloatingRackPointerDown}>
+                גרור את המדף
+              </div>
+              <div className="rack-panel-header">
+                <div className="panel-title">מדף אותיות</div>
+                <button
+                  className={isRackFloating ? "ghost-button rack-float-toggle active-button" : "ghost-button rack-float-toggle"}
+                  onClick={toggleRackFloating}
+                  type="button"
+                >
+                  {isRackFloating ? "סגירת Float" : "Float"}
+                </button>
+              </div>
               <div className="rack">
                 {selfPlayer?.rack.map((tile) => {
                   const placed = pendingByTileId.has(tile.id);
@@ -891,7 +994,47 @@ export default function GameClient({ view = "entry" }) {
                 })}
               </div>
 
-              <p className="hint-text">אפשר לבחור מצב החלפה גם בתור הראשון, לפני שמונחת מילה ראשונה.</p>
+              <div className="tray-header">
+                <strong>אזור סידור מילים</strong>
+                <button className="ghost-button tray-clear-button" type="button" onClick={clearTray}>
+                  ניקוי
+                </button>
+              </div>
+              <div className="tray-grid">
+                {Array.from({ length: TRAY_SIZE }, (_, slotIndex) => {
+                  const tileId = traySlots[slotIndex];
+                  const tile = tileId ? selfPlayer?.rack.find((rackTile) => rackTile.id === tileId) || null : null;
+
+                  return (
+                    <button
+                      key={`tray-${slotIndex}`}
+                      type="button"
+                      className={["tray-slot", tile ? "filled" : ""].filter(Boolean).join(" ")}
+                      onDragOver={handleTrayDragOver}
+                      onDrop={(event) => handleTrayDrop(event, slotIndex)}
+                    >
+                      {tile ? (
+                        <span
+                          className="tray-tile"
+                          draggable={Boolean(roomState?.started && isMyTurn && !exchangeMode && !roomState.finished)}
+                          onDragStart={(event) => handleRackDragStart(event, tile.id)}
+                          onDragEnd={handleRackDragEnd}
+                          onClick={() => handleRackTileClick(tile.id)}
+                          role="button"
+                          tabIndex={0}
+                        >
+                          <span className="tile-letter">{tile.isBlank ? "ריק" : tile.letter}</span>
+                          <span className="tile-score">{tile.value}</span>
+                        </span>
+                      ) : (
+                        <span className="tray-placeholder">גרור לכאן</span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+
+              <p className="hint-text">אפשר לגרור אותיות לכאן כדי לנסות להרכיב מילים, וגם להעביר את המדף ב־Float קרוב ללוח.</p>
               <div className="turn-tools">
                 <button
                   className={exchangeMode ? "secondary-button active-button" : "secondary-button"}
