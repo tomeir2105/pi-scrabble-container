@@ -1,0 +1,12 @@
+services:
+  scrable-live:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "3010:3010"
+    environment:
+      PORT: 3010
+      NODE_ENV: production
+      GAME_PASSWORD: ${GAME_PASSWORD}
+      AUTH_SECRET: ${AUTH_SECRET}
